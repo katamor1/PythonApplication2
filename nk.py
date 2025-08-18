@@ -18,7 +18,6 @@ if headless:
     env["MPLBACKEND"] = "Agg"  # matplotlib をヘッドレス用に設定
     cmd = [
         sys.executable, "-m", "nuitka",
-        "--onefile",
         "--output-dir=" + out_dir,
         "--enable-plugin=no-qt",
         "--include-module=PIL.ImageQt",
@@ -29,7 +28,6 @@ else:
     gui_plugin = "tk-inter"
     cmd = [
         sys.executable, "-m", "nuitka",
-        "--onefile",
         "--output-dir=" + out_dir,
         f"--enable-plugin={gui_plugin}",
         "--include-module=PIL.ImageQt",

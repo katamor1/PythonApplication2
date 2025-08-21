@@ -13,8 +13,8 @@ SETTINGS = {
     "A_AX_OFFSET_Z": -5.0,
     "C_AX_ERROR_X": 0.5,
     "C_AX_ERROR_Y": 0.2,
-    # 取り付け姿勢の基準角度
-    "ZERO_ANGLE_R": 45.0,
+    # 基準角度定数 (R_0, A_0, C_0)
+    "ZERO_ANGLE_R": 0.0,
     "ZERO_ANGLE_A": 23.4,
     "ZERO_ANGLE_C": 12.3,
     # ワーク（四角柱）の定義
@@ -32,59 +32,42 @@ SETTINGS = {
 # --- 日本語フォントの設定 ---
 plt.rcParams['font.family'] = 'MS Gothic'
 
-# ---- グローバル変数 (プロットオブジェクト) ----
+# ---- グローバル変数 ----
 ax = None
 prism_poly3d = None
 table_poly3d = None
-tool_tip_plot = None  # ★ 工具の先端部分のプロットオブジェクト
-tool_cyl_plot = None  # ★ 工具の円柱部分のプロットオブジェクト
+tool_tip_plot = None
+tool_cyl_plot = None
 slider_va = None
 slider_vc = None
-text_boxes = {} # GUIのTextBoxオブジェクトを保持
+text_boxes = {}
 
-# ---- ★ ボールエンドミル工具の形状を定義する関数 ★ ----
-def create_tool_geometry(contact_point, radius=0.2, length=4.0):
-    """
-    指定された接触点に工具の形状（円柱＋半球）を生成する。
-    工具の軸は常に機械Z軸方向を向く。
-    """
-    # 半球（先端）
-    phi = np.linspace(0, np.pi / 2, 15)
-    theta = np.linspace(0, 2 * np.pi, 30)
+# ---- ボールエンドミル工具の形状を定義する関数 ----
+def create_tool_geometry(contact_point, radius=0.5, length=8.0):
+    phi = np.linspace(0, np.pi / 2, 15); theta = np.linspace(0, 2 * np.pi, 30)
     phi, theta = np.meshgrid(phi, theta)
-    
     x_tip = radius * np.sin(phi) * np.cos(theta) + contact_point[0]
     y_tip = radius * np.sin(phi) * np.sin(theta) + contact_point[1]
-    z_tip = -radius * np.cos(phi) + contact_point[2] # 接地点から下方向に半球を描画
-
-    # 円柱（シャンク）
-    z_cyl = np.linspace(0, length, 15)
-    theta_cyl = np.linspace(0, 2 * np.pi, 30)
+    z_tip = -radius * np.cos(phi) + contact_point[2]
+    z_cyl = np.linspace(0, length, 15); theta_cyl = np.linspace(0, 2 * np.pi, 30)
     theta_cyl, z_cyl = np.meshgrid(theta_cyl, z_cyl)
-
     x_cyl = radius * np.cos(theta_cyl) + contact_point[0]
     y_cyl = radius * np.sin(theta_cyl) + contact_point[1]
-    z_cyl += contact_point[2] # 接地点から上方向に円柱を描画
-    
+    z_cyl += contact_point[2]
     return (x_tip, y_tip, z_tip), (x_cyl, y_cyl, z_cyl)
 
-# ---- 回転行列を定義する関数 (変更なし) ----
+# ---- 回転行列を定義する関数 ----
 def rotation_matrix_x(theta_deg):
     theta_rad = np.deg2rad(theta_deg)
     c, s = np.cos(theta_rad), np.sin(theta_rad)
     return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
-
-def rotation_matrix_y(theta_deg):
-    theta_rad = np.deg2rad(theta_deg)
-    c, s = np.cos(theta_rad), np.sin(theta_rad)
-    return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
 
 def rotation_matrix_z(theta_deg):
     theta_rad = np.deg2rad(theta_deg)
     c, s = np.cos(theta_rad), np.sin(theta_rad)
     return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
 
-# ---- 形状定義の関数 (変更なし) ----
+# ---- 形状定義の関数 ----
 def define_prism_local(size):
     w, d, h = size
     x = np.array([-w/2, w/2, w/2, -w/2, -w/2, w/2, w/2, -w/2])
@@ -103,43 +86,61 @@ def get_circle_surface(center, radius, num_points=100):
 def update(val):
     global prism_poly3d, table_poly3d, text_boxes, tool_tip_plot, tool_cyl_plot
     
-    # --- 1. 逆運動学計算 (変更なし) ---
-    R_vA = rotation_matrix_x(slider_va.val)
-    R_vC = rotation_matrix_z(slider_vc.val)
-    R_target_final = R_vA @ R_vC
+    # --- 1. 逆運動学計算 ---
+    # スライダーから指令角度 Av, Cv を取得
+    Av = slider_va.val
+    Cv = slider_vc.val
+    
+    # 定数 R_0, A_0, C_0 を取得
+    R_0 = SETTINGS["ZERO_ANGLE_R"]
+    A_0 = SETTINGS["ZERO_ANGLE_A"]
+    C_0 = SETTINGS["ZERO_ANGLE_C"]
 
-    initial_normal = np.array([0, 0, 1])
-    current_normal = R_target_final @ initial_normal
-    text_boxes["Normal X"].set_val(f"{current_normal[0]:.4f}")
-    text_boxes["Normal Y"].set_val(f"{current_normal[1]:.4f}")
-    text_boxes["Normal Z"].set_val(f"{current_normal[2]:.4f}")
+    # Z軸方向単位ベクトル Vz
+    Vz = np.array([0, 0, 1])
+
+    # 指令角度からターゲットベクトルを計算: V_target = Rz(Cv)Rx(Av)Vz
+    R_Av = rotation_matrix_x(Av)
+    R_Cv = rotation_matrix_z(Cv)
+    V_target = R_Cv @ R_Av @ Vz
     
-    R_r_zero = rotation_matrix_z(SETTINGS["ZERO_ANGLE_R"])
-    R_a_zero = rotation_matrix_x(SETTINGS["ZERO_ANGLE_A"])
-    R_c_zero = rotation_matrix_z(SETTINGS["ZERO_ANGLE_C"])
-    R_mount_inv = R_a_zero @ R_c_zero
-    R_machine_target = R_target_final @ R_mount_inv
+    # 方程式の左辺から R_machine を分離するための変換行列を計算
+    # (Rz(-R_0)Rx(-A_0)Rz(-C_0))^-1 = Rz(C_0)Rx(A_0)Rz(R_0)
+    R_R0 = rotation_matrix_z(R_0)
+    R_A0 = rotation_matrix_x(A_0)
+    R_C0 = rotation_matrix_z(C_0)
+    R_mount_for_IK = R_C0 @ R_A0 @ R_R0
     
-    sin_A = -R_machine_target[1, 2]
-    cos_A = math.sqrt(R_machine_target[1, 0]**2 + R_machine_target[1, 1]**2)
-    A_rad = math.atan2(sin_A, cos_A)
+    # 機械座標系での最終的な工具ベクトルを計算
+    V_final = R_mount_for_IK @ V_target
     
-    if np.isclose(cos_A, 0):
-        C_rad = 0
-    else:
-        C_rad = math.atan2(R_machine_target[1, 0], R_machine_target[1, 1])
+    # V_final = [x, y, z] から A と C を解析的に解く
+    x, y, z = V_final
+    
+    # A = arccos(z)
+    A_rad = np.arccos(np.clip(z, -1.0, 1.0)) # 値を-1から1の範囲にクリップしてエラーを防ぐ
+    
+    # C = atan2(x, -y)
+    C_rad = np.arctan2(x, -y)
         
     A_deg, C_deg = np.rad2deg([A_rad, C_rad])
+    
+    # 計算結果をGUIに表示
     text_boxes["Machine A"].set_val(f"{A_deg:.2f}")
     text_boxes["Machine C"].set_val(f"{C_deg:.2f}")
+    
+    # 法線ベクトルの表示 (これは仮想的なもの)
+    text_boxes["Normal X"].set_val(f"{V_target[0]:.4f}")
+    text_boxes["Normal Y"].set_val(f"{V_target[1]:.4f}")
+    text_boxes["Normal Z"].set_val(f"{V_target[2]:.4f}")
 
     # --- 2. 順運動学 & 描画更新 ---
     R_a, R_c = rotation_matrix_x(A_deg), rotation_matrix_z(C_deg)
     
-    # ワークとテーブルの初期形状を再計算
-    R_mount = R_c_zero.T @ R_a_zero.T
+    # rebuild_plotと計算方法を統一
+    R_mount_Fwd = R_C0.T @ R_A0.T @ R_R0.T
     prism_local_vertices = define_prism_local((SETTINGS["WORK_WIDTH"], SETTINGS["WORK_DEPTH"], SETTINGS["WORK_HEIGHT"]))
-    prism_mounted_vertices = (R_mount @ prism_local_vertices.T).T
+    prism_mounted_vertices = (R_mount_Fwd @ prism_local_vertices.T).T
     prism_initial_center = np.array([
         SETTINGS["C_AX_ERROR_X"] + SETTINGS["WORK_OFS_X"],
         SETTINGS["C_AX_ERROR_Y"] + SETTINGS["WORK_OFS_Y"],
@@ -148,51 +149,38 @@ def update(val):
     original_prism_vertices = prism_mounted_vertices + prism_initial_center
     table_initial_center = (SETTINGS["C_AX_ERROR_X"], SETTINGS["C_AX_ERROR_Y"], 0)
     original_table_verts, _ = get_circle_surface(table_initial_center, SETTINGS["TABLE_RADIUS"])
-
-    # 座標変換を安全なステップ・バイ・ステップ方式で適用
     offset_vector = np.array([0, SETTINGS["A_AX_OFFSET_Y"], SETTINGS["A_AX_OFFSET_Z"]])
     
-    # プリズムの変換
+    # プリズムの変換 
     prism_c_rotated = (R_c @ original_prism_vertices.T).T
     prism_offset = prism_c_rotated + offset_vector
-    prism_a_rotated = (R_a @ prism_offset.T).T
-    prism_vector = np.array([prism_a_rotated[0]])
-    prism_final = (R_r_zero @ (prism_a_rotated-prism_vector).T).T + prism_vector
+    prism_final = (R_a @ prism_offset.T).T
 
-    # テーブルの変換
+    # テーブルの変換 
     table_c_rotated_verts = (R_c @ original_table_verts.T).T
     table_offset_verts = table_c_rotated_verts + offset_vector
-    table_a_rotated_verts = (R_a @ table_offset_verts.T).T
-    table_final_verts = (table_a_rotated_verts.T).T
+    table_final_verts = (R_a @ table_offset_verts.T).T
     
     # 頂点データ更新
     faces_indices = [[0, 1, 5, 4], [2, 3, 7, 6], [0, 3, 7, 4], [1, 2, 6, 5], [0, 1, 2, 3], [4, 5, 6, 7]]
     prism_poly3d.set_verts([prism_final[i] for i in faces_indices])
     
-    table_center_final = (R_a @ ( (R_c @ table_initial_center) + offset_vector))
+    table_center_final = R_a @ ( (R_c @ table_initial_center) + offset_vector)
     final_faces = [[v1, v2, table_center_final] for v1, v2 in zip(table_final_verts, np.roll(table_final_verts, -1, axis=0))]
     table_poly3d.set_verts(final_faces)
 
-    # --- ★★★ 3. 工具の位置を計算して再描画 ★★★ ---
-    # ワーク上面の中心座標の初期値を定義
+    # --- 3. 工具の位置を計算して再描画 ---
     top_center_local = np.array([0, 0, SETTINGS["WORK_HEIGHT"] / 2])
-    top_center_mounted = (R_mount @ top_center_local.T).T
+    top_center_mounted = (R_mount_Fwd @ top_center_local.T).T
     original_top_center = top_center_mounted + prism_initial_center
     
-    # ワークと同じ座標変換を上面中心点に適用
     top_center_c_rotated = (R_c @ original_top_center.T).T
     top_center_offset = top_center_c_rotated + offset_vector
-    top_center_a_rotated = (R_a @ top_center_offset.T).T
-    # top_center_final = (R_r_zero @ (top_center_a_rotated-prism_vector).T).T + prism_vector
-    top_center_final = ((top_center_a_rotated).T).T
+    top_center_final = (R_a @ top_center_offset.T).T
     
-    # 古い工具を削除
-    if tool_tip_plot:
-        tool_tip_plot.remove()
-    if tool_cyl_plot:
-        tool_cyl_plot.remove()
+    if tool_tip_plot: tool_tip_plot.remove()
+    if tool_cyl_plot: tool_cyl_plot.remove()
         
-    # 新しい位置に工具を描画
     tip_geom, cyl_geom = create_tool_geometry(top_center_final)
     tool_tip_plot = ax.plot_surface(tip_geom[0], tip_geom[1], tip_geom[2], color='gray', alpha=0.9, zorder=10)
     tool_cyl_plot = ax.plot_surface(cyl_geom[0], cyl_geom[1], cyl_geom[2], color='dimgray', alpha=0.9, zorder=10)
@@ -214,11 +202,10 @@ def rebuild_plot():
     global ax, prism_poly3d, table_poly3d, tool_tip_plot, tool_cyl_plot
     ax.clear()
 
-    # オブジェクトの初期状態を計算
     R_r_zero = rotation_matrix_z(SETTINGS["ZERO_ANGLE_R"])
     R_a_zero = rotation_matrix_x(SETTINGS["ZERO_ANGLE_A"])
     R_c_zero = rotation_matrix_z(SETTINGS["ZERO_ANGLE_C"])
-    R_mount = R_c_zero.T @ R_a_zero.T @ R_r_zero.T
+    R_mount = R_c_zero.T @ R_a_zero.T @ R_r_zero.T # 順運動学での取り付け姿勢
     
     prism_local_vertices = define_prism_local((SETTINGS["WORK_WIDTH"], SETTINGS["WORK_DEPTH"], SETTINGS["WORK_HEIGHT"]))
     prism_mounted_vertices = (R_mount @ prism_local_vertices.T).T
@@ -231,21 +218,16 @@ def rebuild_plot():
     table_initial_center = (SETTINGS["C_AX_ERROR_X"], SETTINGS["C_AX_ERROR_Y"], 0)
     original_table_verts, original_table_faces = get_circle_surface(table_initial_center, SETTINGS["TABLE_RADIUS"])
 
-    # 3Dオブジェクトを再作成してプロットに追加
     faces_indices = [[0, 1, 5, 4], [2, 3, 7, 6], [0, 3, 7, 4], [1, 2, 6, 5], [0, 1, 2, 3], [4, 5, 6, 7]]
     face_colors = ['cyan'] * 5 + ['yellow']
     prism_poly3d = Poly3DCollection([original_prism_vertices[i] for i in faces_indices],
                                       facecolors=face_colors, linewidths=1, edgecolors='k', alpha=0.9)
     ax.add_collection3d(prism_poly3d)
-
     table_poly3d = Poly3DCollection(original_table_faces, facecolors='gray', linewidths=0, alpha=0.3)
     ax.add_collection3d(table_poly3d)
     
-    # ★★★ 工具のプロットオブジェクトを初期化 ★★★
-    tool_tip_plot = None
-    tool_cyl_plot = None
+    tool_tip_plot, tool_cyl_plot = None, None
 
-    # プロットの見た目を設定
     ax.set_title('5-Axis Trunnion Simulation')
     ax.set_xlabel('X-axis'), ax.set_ylabel('Y-axis'), ax.set_zlabel('Z-axis')
     limit = max(SETTINGS["TABLE_RADIUS"] * 1.2, 5)
@@ -255,24 +237,22 @@ def rebuild_plot():
     ax.legend()
     ax.view_init(elev=25., azim=45)
     ax.set_aspect('equal', adjustable='box')
-
-    # 初期描画
     update(0)
 
-# ---- メイン処理 (変更なし) ----
+# ---- メイン処理 ----
 fig = plt.figure(figsize=(12, 9))
 ax = fig.add_subplot(111, projection='3d')
 fig.subplots_adjust(bottom=0.45, top=0.95, left=0.05, right=0.95)
 
 # --- GUIコントロールの配置 ---
 ax_slider_va = fig.add_axes([0.1, 0.35, 0.8, 0.03])
-slider_va = Slider(ax=ax_slider_va, label='Virtual A [deg]', valmin=-180, valmax=180, valinit=0)
+slider_va = Slider(ax=ax_slider_va, label='Virtual A (Av) [deg]', valmin=-180, valmax=180, valinit=0)
 ax_slider_vc = fig.add_axes([0.1, 0.30, 0.8, 0.03])
-slider_vc = Slider(ax=ax_slider_vc, label='Virtual C [deg]', valmin=-180, valmax=180, valinit=0)
+slider_vc = Slider(ax=ax_slider_vc, label='Virtual C (Cv) [deg]', valmin=-180, valmax=180, valinit=0)
 
 info_labels = ["Machine A", "Machine C", "Normal X", "Normal Y", "Normal Z"]
 for i, label in enumerate(info_labels):
-    ax_box = fig.add_axes([0.1 + (i % 3) * 0.2, 0.22 - (i // 3) * 0.04, 0.12, 0.03])
+    ax_box = fig.add_axes([0.1 + i*0.18, 0.22, 0.12, 0.03])
     text_boxes[label] = TextBox(ax_box, label, initial="0.0")
 
 setting_keys = list(SETTINGS.keys())
